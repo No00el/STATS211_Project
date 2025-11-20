@@ -1,173 +1,305 @@
 import numpy as np
 import pandas as pd
 from scipy.special import gammaln
+import matplotlib.pyplot as plt
 
 # ================================
 # 1. nu 的对数后验（只差一个常数）
 # ================================
 def log_p_nu(nu, lambdas, a0=2.0, b0=0.1):
-    """
-    计算 log p(nu | lambda)（只差常数），用于 Metropolis 步骤。
-    先验: nu ~ Gamma(a0, b0)（shape=a0, rate=b0）
-    lambdas: 一维数组 lambda_i
-    """
+    """log p(nu | lambda) up to constant, with Gamma(a0,b0) prior on nu (shape-rate)."""
     if nu <= 0:
         return -np.inf
-
     n = len(lambdas)
     sum_log_lambda = np.sum(np.log(lambdas))
     sum_lambda = np.sum(lambdas)
-
-    # Gamma(a0, b0) 先验 (shape, rate)：log p(nu) ∝ (a0-1)*log(nu) - b0*nu
     log_prior = (a0 - 1.0) * np.log(nu) - b0 * nu
-
-    # lambda_i ~ Gamma(nu/2, nu/2) (shape, rate)
     half_nu = nu / 2.0
     log_lik = (
         n * (half_nu * np.log(half_nu) - gammaln(half_nu))
         + (half_nu - 1.0) * sum_log_lambda
         - half_nu * sum_lambda
     )
-
     return log_prior + log_lik
 
 
-# ==========================================
-# 2. Metropolis within Gibbs 主函数
-# ==========================================
 def metropolis_within_gibbs_t(
     y,
-    n_iter=20000,
-    m0=0.0, kappa0=0.01,      # mu | sigma^2 的正态先验超参数
-    alpha0=2.0, beta0=1.0,    # sigma^2 的逆 Gamma 先验超参数
-    a0=2.0, b0=0.1,           # nu 的 Gamma 先验超参数
-    prop_sd=0.3,              # log(nu) 随机游走提议的标准差
-    seed=123
+    n_iter=200000,
+    m0=0.0,
+    kappa0=0.01,
+    alpha0=2.0,
+    beta0=1.0,
+    a0=2.0,
+    b0=0.1,
+    prop_sd=0.3,
+    seed=123,
+    enforce_nu_gt_2=False,
+    adapt=True,
+    adapt_start=100,
+    adapt_end=5000,
+    adapt_interval=50,
+    target_accept=0.3,
 ):
-    """
-    Metropolis-within-Gibbs 采样器:
-        y_i ~ t_nu(mu, sigma^2)
-
-    先验:
-        mu | sigma^2 ~ N(m0, sigma^2 / kappa0)
-        sigma^2 ~ Inv-Gamma(alpha0, beta0)
-        nu ~ Gamma(a0, b0) (shape, rate)
-
-    返回值:
-        dict: 包含 'mu', 'sigma2', 'nu' 三条链
-    """
     rng = np.random.default_rng(seed)
     y = np.asarray(y)
     n = len(y)
-
-    # 存储链
     mu_chain = np.zeros(n_iter)
     sigma2_chain = np.zeros(n_iter)
     nu_chain = np.zeros(n_iter)
-
-    # 初始值（可以比较随意给一个合理的起点）
     mu = np.mean(y)
     sigma2 = np.var(y)
     nu = 5.0
     lambdas = np.ones(n)
-
+    accept_count = 0
+    curr_prop_sd = float(prop_sd)
+    log_prop_sd = np.log(curr_prop_sd)
     for it in range(n_iter):
-        # ----------------------------- #
-        # 1. 更新 lambda_i | mu, sigma2, nu, y （Gibbs）
-        #    lambda_i ~ Gamma((nu+1)/2, (nu + (y_i-mu)^2/sigma2)/2) (shape, rate)
         shape_lam = (nu + 1.0) / 2.0
         rate_lam = (nu + (y - mu) ** 2 / sigma2) / 2.0
-        # numpy 的 Gamma(k, theta) 用的是 scale=theta，因此要用 1/rate
         lambdas = rng.gamma(shape_lam, 1.0 / rate_lam)
-
-        # ----------------------------- #
-        # 2. 更新 mu | sigma2, lambdas, y （Gibbs）
-        #    是一个带权重的正态模型
         W = np.sum(lambdas)
         sum_wy = np.sum(lambdas * y)
-
         kappa_n = kappa0 + W
         m_n = (kappa0 * m0 + sum_wy) / kappa_n
-
         mu_var = sigma2 / kappa_n
         mu = rng.normal(m_n, np.sqrt(mu_var))
-
-        # ----------------------------- #
-        # 3. 更新 sigma^2 | mu, lambdas, y （Gibbs）
-        #    sigma^2 ~ Inv-Gamma(alpha_n, beta_n)
         alpha_n = alpha0 + n / 2.0
         beta_n = beta0 + 0.5 * np.sum(lambdas * (y - mu) ** 2)
-
-        # 如果 X ~ Gamma(alpha_n, scale=1/beta_n)，则 1/X ~ Inv-Gamma(alpha_n, beta_n)
         gamma_sample = rng.gamma(alpha_n, 1.0 / beta_n)
         sigma2 = 1.0 / gamma_sample
-
-        # ----------------------------- #
-        # 4. 更新 nu | lambdas （Metropolis 在 log(nu) 空间）
-        eta_curr = np.log(nu)
-        eta_prop = eta_curr + rng.normal(0.0, prop_sd)
-        nu_prop = np.exp(eta_prop)
-
-        # 在 eta 空间的 log 后验 = log p(nu | lambda) + log |d nu / d eta| = log p(nu|lambda) + log(nu)
-        logpost_curr = log_p_nu(nu, lambdas, a0=a0, b0=b0) + np.log(nu)
-        logpost_prop = log_p_nu(nu_prop, lambdas, a0=a0, b0=b0) + np.log(nu_prop)
-
+        if enforce_nu_gt_2:
+            xi_curr = np.log(nu - 2.0) if nu > 2.0 else -5.0
+            xi_prop = xi_curr + rng.normal(0.0, curr_prop_sd)
+            nu_prop = 2.0 + np.exp(xi_prop)
+            logpost_curr = log_p_nu(nu, lambdas, a0=a0, b0=b0) + np.log(max(nu - 2.0, 1e-12))
+            logpost_prop = log_p_nu(nu_prop, lambdas, a0=a0, b0=b0) + np.log(nu_prop - 2.0)
+        else:
+            eta_curr = np.log(nu)
+            eta_prop = eta_curr + rng.normal(0.0, curr_prop_sd)
+            nu_prop = np.exp(eta_prop)
+            logpost_curr = log_p_nu(nu, lambdas, a0=a0, b0=b0) + np.log(nu)
+            logpost_prop = log_p_nu(nu_prop, lambdas, a0=a0, b0=b0) + np.log(nu_prop)
         log_acc_ratio = logpost_prop - logpost_curr
         if np.log(rng.uniform()) < log_acc_ratio:
-            nu = nu_prop  # 接受新值
-
-        # ----------------------------- #
-        # 保存样本
+            nu = nu_prop
+            accept_count += 1
+        if adapt and (adapt_start <= it + 1 <= adapt_end) and ((it + 1) % adapt_interval == 0):
+            acc_rate = accept_count / float(it + 1)
+            log_prop_sd += 0.05 * (acc_rate - target_accept)
+            log_prop_sd = np.clip(log_prop_sd, np.log(1e-3), np.log(5.0))
+            curr_prop_sd = float(np.exp(log_prop_sd))
         mu_chain[it] = mu
         sigma2_chain[it] = sigma2
         nu_chain[it] = nu
-
+    accept_rate = accept_count / float(n_iter)
     return {
         "mu": mu_chain,
         "sigma2": sigma2_chain,
         "nu": nu_chain,
+        "accept_rate": accept_rate,
+        "final_prop_sd": curr_prop_sd,
+        "enforce_nu_gt_2": enforce_nu_gt_2,
     }
+
+
+# ==========================================
+# 辅助：绘图与简单 ACF
+# ==========================================
+def _autocorr(x, max_lag=40):
+    x = np.asarray(x)
+    x = x - x.mean()
+    n = len(x)
+    if n < 2:
+        return np.array([1.0])
+    var = np.dot(x, x) / n
+    if var == 0:
+        return np.ones(min(max_lag, n - 1) + 1)
+    K = min(max_lag, n - 1)
+    acf = np.empty(K + 1)
+    acf[0] = 1.0
+    for k in range(1, K + 1):
+        acf[k] = np.dot(x[: n - k], x[k:]) / (n * var)
+    return acf
+
+
+def save_trace_plots(samples, burn=0, out_path="traceplots.png"):
+    mu = samples["mu"][burn:]
+    sigma = np.sqrt(samples["sigma2"][burn:])
+    nu = samples["nu"][burn:]
+
+    fig, axes = plt.subplots(3, 1, figsize=(9, 7), constrained_layout=True)
+    axes[0].plot(mu, lw=0.8)
+    axes[0].set_title("Trace: mu")
+    axes[1].plot(sigma, lw=0.8)
+    axes[1].set_title("Trace: sigma")
+    axes[2].plot(nu, lw=0.8)
+    axes[2].set_title("Trace: nu")
+    for ax in axes:
+        ax.grid(True, alpha=0.3)
+    fig.suptitle("MCMC Trace Plots (burn-in removed)")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def save_acf_plots(samples, burn=0, max_lag=40, out_path="acfplots.png", thin=50, only_nu=False):
+    mu = samples["mu"][burn:]
+    sigma = np.sqrt(samples["sigma2"][burn:])
+    nu = samples["nu"][burn:]
+
+    # Thinning
+    thin = max(1, int(thin))
+    mu_t = mu[::thin]
+    sigma_t = sigma[::thin]
+    nu_t = nu[::thin]
+
+    if only_nu:
+        acf_nu = _autocorr(nu_t, max_lag=max_lag)
+        lags = np.arange(len(acf_nu))
+        fig, ax = plt.subplots(1, 1, figsize=(10, 4.5), constrained_layout=True)
+        ax.stem(lags, acf_nu)
+        ax.set_xlim(0, max(lags) if len(lags) else 0)
+        ax.set_title(f"ACF: nu (thinning={thin})")
+        ax.grid(True, alpha=0.3)
+        fig.suptitle("Sample Autocorrelation (burn-in removed)")
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        return
+
+    acf_mu = _autocorr(mu_t, max_lag=max_lag)
+    acf_sigma = _autocorr(sigma_t, max_lag=max_lag)
+    acf_nu = _autocorr(nu_t, max_lag=max_lag)
+    lags_mu = np.arange(len(acf_mu))
+    lags_sigma = np.arange(len(acf_sigma))
+    lags_nu = np.arange(len(acf_nu))
+
+    fig, axes = plt.subplots(3, 1, figsize=(9.5, 7), constrained_layout=True)
+    axes[0].stem(lags_mu, acf_mu)
+    axes[0].set_title(f"ACF: mu (thinning={thin})")
+    axes[1].stem(lags_sigma, acf_sigma)
+    axes[1].set_title(f"ACF: sigma (thinning={thin})")
+    axes[2].stem(lags_nu, acf_nu)
+    axes[2].set_title(f"ACF: nu (thinning={thin})")
+    for ax in axes:
+        # Set xlim to the length available for each subplot
+        x_max = 0
+        if ax is axes[0]:
+            x_max = max(lags_mu) if len(lags_mu) else 0
+        elif ax is axes[1]:
+            x_max = max(lags_sigma) if len(lags_sigma) else 0
+        else:
+            x_max = max(lags_nu) if len(lags_nu) else 0
+        ax.set_xlim(0, x_max)
+        ax.grid(True, alpha=0.3)
+    fig.suptitle("Sample Autocorrelation (burn-in removed)")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
 
 
 # ==========================================
 # 3. 主程序：读取 SP500.csv，计算 log return 并跑 MCMC
 # ==========================================
 if __name__ == "__main__":
-    # 1）读取数据
-    df = pd.read_csv("SP500.csv")
-
-    # 确保价格列是数值型
-    df["SP500"] = pd.to_numeric(df["SP500"], errors="coerce")
-    df = df.dropna(subset=["SP500"])
-
-    # 按日期排序（保险起见）
-    df = df.sort_values("observation_date")
-
-    # 2）计算每日对数收益率: r_t = log(P_t / P_{t-1})
-    prices = df["SP500"].values
+    import argparse, json, time, csv
+    parser = argparse.ArgumentParser(description="Metropolis-within-Gibbs sampler for Student-t model of log returns.")
+    parser.add_argument("--csv", default="SP500.csv")
+    parser.add_argument("--price-col", default="SP500")
+    parser.add_argument("--date-col", default="observation_date")
+    parser.add_argument("--n-iter", type=int, default=200000)
+    parser.add_argument("--burn", type=int, default=5000)
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--prop-sd", type=float, default=0.3)
+    parser.add_argument("--target-accept", type=float, default=0.30)
+    parser.add_argument("--adapt", action="store_true")
+    parser.add_argument("--no-adapt", action="store_true")
+    parser.add_argument("--adapt-start", type=int, default=200)
+    parser.add_argument("--adapt-end", type=int, default=None)
+    parser.add_argument("--adapt-interval", type=int, default=50)
+    parser.add_argument("--nu-gt2", action="store_true")
+    parser.add_argument("--no-nu-gt2", action="store_true")
+    parser.add_argument("--m0", type=float, default=0.0)
+    parser.add_argument("--kappa0", type=float, default=0.01)
+    parser.add_argument("--alpha0", type=float, default=2.0)
+    parser.add_argument("--beta0", type=float, default=1.0)
+    parser.add_argument("--a0", type=float, default=2.0)
+    parser.add_argument("--b0", type=float, default=0.1)
+    parser.add_argument("--out-prefix", default="results")
+    parser.add_argument("--save-samples", action="store_true")
+    parser.add_argument("--save-full", action="store_true")
+    parser.add_argument("--acf-lag", type=int, default=40)
+    parser.add_argument("--acf-thin", type=int, default=50, help="Thinning factor for ACF computation only (default 50).")
+    parser.add_argument("--acf-only-nu", action="store_true", help="Plot only nu's ACF using optional thinning.")
+    args = parser.parse_args()
+    adapt_flag = args.adapt and not args.no_adapt
+    nu_gt2_flag = args.nu_gt2 and not args.no_nu_gt2
+    burn_in = args.burn
+    adapt_end_iter = args.adapt_end if args.adapt_end is not None else burn_in
+    t0 = time.time()
+    df = pd.read_csv(args.csv)
+    df[args.price_col] = pd.to_numeric(df[args.price_col], errors="coerce")
+    df = df.dropna(subset=[args.price_col]).sort_values(args.date_col)
+    prices = df[args.price_col].values
     log_returns = np.log(prices[1:] / prices[:-1])
-
     print(f"共有 {len(log_returns)} 条日对数收益率数据。")
-
-    # 3）运行 Metropolis within Gibbs 采样
     out = metropolis_within_gibbs_t(
         log_returns,
-        n_iter=20000,
-        m0=0.0, kappa0=0.01,
-        alpha0=2.0, beta0=1.0,
-        a0=2.0, b0=0.1,
-        prop_sd=0.3,
-        seed=123
+        n_iter=args.n_iter,
+        m0=args.m0,
+        kappa0=args.kappa0,
+        alpha0=args.alpha0,
+        beta0=args.beta0,
+        a0=args.a0,
+        b0=args.b0,
+        prop_sd=args.prop_sd,
+        seed=args.seed,
+        enforce_nu_gt_2=nu_gt2_flag,
+        adapt=adapt_flag,
+        adapt_start=args.adapt_start,
+        adapt_end=adapt_end_iter,
+        adapt_interval=args.adapt_interval,
+        target_accept=args.target_accept,
     )
-
-    # 4）去掉 burn-in，计算后验均值作为参数估计
-    burn_in = 5000
     mu_est = out["mu"][burn_in:].mean()
     sigma2_est = out["sigma2"][burn_in:].mean()
     nu_est = out["nu"][burn_in:].mean()
-
-    print("\n基于 t 分布的参数后验均值估计：")
-    print(f"mu（位置参数）       ≈ {mu_est:.6f}")
-    print(f"sigma^2（方差参数） ≈ {sigma2_est:.8f}")
-    print(f"sigma（标准差）     ≈ {np.sqrt(sigma2_est):.6f}")
-    print(f"nu（自由度）        ≈ {nu_est:.3f}")
+    elapsed = time.time() - t0
+    print("\n后验均值：")
+    print(f"mu      ≈ {mu_est:.6f}")
+    print(f"sigma^2 ≈ {sigma2_est:.8f}")
+    print(f"sigma   ≈ {np.sqrt(sigma2_est):.6f}")
+    print(f"nu      ≈ {nu_est:.3f}")
+    print(f"MH 接受率 ≈ {out['accept_rate']*100:.1f}% | 最终步长 ≈ {out['final_prop_sd']:.3f} | enforce nu>2: {out['enforce_nu_gt_2']}")
+    print(f"耗时 ≈ {elapsed:.2f} 秒")
+    trace_path = f"{args.out_prefix}_trace.png"
+    acf_path = f"{args.out_prefix}_acf.png"
+    save_trace_plots(out, burn=burn_in, out_path=trace_path)
+    save_acf_plots(out, burn=burn_in, max_lag=args.acf_lag, out_path=acf_path, thin=args.acf_thin, only_nu=args.acf_only_nu)
+    print(f"保存: {trace_path}, {acf_path}")
+    summary = {
+        "n_iter": args.n_iter,
+        "burn_in": burn_in,
+        "mu_mean": float(mu_est),
+        "sigma2_mean": float(sigma2_est),
+        "sigma_mean": float(np.sqrt(sigma2_est)),
+        "nu_mean": float(nu_est),
+        "accept_rate": float(out["accept_rate"]),
+        "final_prop_sd": float(out["final_prop_sd"]),
+        "enforce_nu_gt_2": out["enforce_nu_gt_2"],
+        "adapt": adapt_flag,
+        "target_accept": args.target_accept,
+        "runtime_seconds": elapsed,
+    }
+    with open(f"{args.out_prefix}_summary.json", "w", encoding="utf-8") as f:
+        import json
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    print(f"保存: {args.out_prefix}_summary.json")
+    if args.save_samples or args.save_full:
+        post_mu = out["mu"][burn_in:] if args.save_samples else out["mu"]
+        post_sigma2 = out["sigma2"][burn_in:] if args.save_samples else out["sigma2"]
+        post_nu = out["nu"][burn_in:] if args.save_samples else out["nu"]
+        with open(f"{args.out_prefix}_samples.csv", "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["mu", "sigma2", "nu"])
+            for a, b, c in zip(post_mu, post_sigma2, post_nu):
+                w.writerow([f"{a:.8f}", f"{b:.8f}", f"{c:.5f}"])
+        print(f"保存: {args.out_prefix}_samples.csv (rows={len(post_mu)})")

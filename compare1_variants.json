@@ -1,0 +1,41 @@
+[
+  {
+    "name": "base",
+    "n_iter": 1000,
+    "burn": 250,
+    "mu_mean": 0.0004851675254052775,
+    "sigma2_mean": 0.0009241082322594988,
+    "sigma_mean": 0.03039914854497571,
+    "nu_mean": 55.48879008455557,
+    "accept_rate": 0.138,
+    "final_prop_sd": 0.2869262837719822,
+    "enforce_nu_gt_2": true,
+    "runtime_sec": 0.07847452163696289
+  },
+  {
+    "name": "wide-prop",
+    "n_iter": 1000,
+    "burn": 250,
+    "mu_mean": 0.00046795917087094846,
+    "sigma2_mean": 0.0009232858060670189,
+    "sigma_mean": 0.03038561840850074,
+    "nu_mean": 31.179793925016973,
+    "accept_rate": 0.075,
+    "final_prop_sd": 0.6386626411165648,
+    "enforce_nu_gt_2": true,
+    "runtime_sec": 0.1035313606262207
+  },
+  {
+    "name": "no-enforce",
+    "n_iter": 1000,
+    "burn": 250,
+    "mu_mean": 0.0004982209095584067,
+    "sigma2_mean": 0.000922984980011596,
+    "sigma_mean": 0.030380667866450797,
+    "nu_mean": 61.024582322009394,
+    "accept_rate": 0.127,
+    "final_prop_sd": 0.28327995508758197,
+    "enforce_nu_gt_2": false,
+    "runtime_sec": 0.09166717529296875
+  }
+]

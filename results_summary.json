@@ -1,0 +1,14 @@
+{
+  "n_iter": 200000,
+  "burn_in": 5000,
+  "mu_mean": 0.0004790488533792035,
+  "sigma2_mean": 0.0009249234439404558,
+  "sigma_mean": 0.030412554051582972,
+  "nu_mean": 90.18761219757522,
+  "accept_rate": 0.11838,
+  "final_prop_sd": 0.3,
+  "enforce_nu_gt_2": false,
+  "adapt": false,
+  "target_accept": 0.3,
+  "runtime_seconds": 18.867263793945312
+}
