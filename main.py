@@ -32,14 +32,14 @@ def metropolis_within_gibbs_t(
     beta0=1.0,
     a0=2.0,
     b0=0.1,
-    prop_sd=0.3,
+    prop_sd=0.1,
     seed=123,
     enforce_nu_gt_2=False,
     adapt=True,
-    adapt_start=100,
-    adapt_end=5000,
+    adapt_start=200,
+    adapt_end=10000,
     adapt_interval=50,
-    target_accept=0.3,
+    target_accept=0.30,
 ):
     rng = np.random.default_rng(seed)
     y = np.asarray(y)
@@ -52,6 +52,7 @@ def metropolis_within_gibbs_t(
     nu = 5.0
     lambdas = np.ones(n)
     accept_count = 0
+    accept_count_window = 0
     curr_prop_sd = float(prop_sd)
     log_prop_sd = np.log(curr_prop_sd)
     for it in range(n_iter):
@@ -84,11 +85,16 @@ def metropolis_within_gibbs_t(
         if np.log(rng.uniform()) < log_acc_ratio:
             nu = nu_prop
             accept_count += 1
+            accept_count_window += 1
         if adapt and (adapt_start <= it + 1 <= adapt_end) and ((it + 1) % adapt_interval == 0):
-            acc_rate = accept_count / float(it + 1)
-            log_prop_sd += 0.05 * (acc_rate - target_accept)
+            # Use recent-window acceptance (over the last `adapt_interval` proposals)
+            # This is more responsive than the cumulative acceptance rate.
+            acc_rate = accept_count_window / float(adapt_interval)
+            # A slightly larger step (0.10) helps the scale adapt faster in short runs.
+            log_prop_sd += 0.1 * (acc_rate - target_accept)
             log_prop_sd = np.clip(log_prop_sd, np.log(1e-3), np.log(5.0))
             curr_prop_sd = float(np.exp(log_prop_sd))
+            accept_count_window = 0
         mu_chain[it] = mu
         sigma2_chain[it] = sigma2
         nu_chain[it] = nu
@@ -208,7 +214,7 @@ if __name__ == "__main__":
     parser.add_argument("--n-iter", type=int, default=200000)
     parser.add_argument("--burn", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--prop-sd", type=float, default=0.3)
+    parser.add_argument("--prop-sd", type=float, default=0.1)
     parser.add_argument("--target-accept", type=float, default=0.30)
     parser.add_argument("--adapt", action="store_true")
     parser.add_argument("--no-adapt", action="store_true")
@@ -227,7 +233,7 @@ if __name__ == "__main__":
     parser.add_argument("--save-samples", action="store_true")
     parser.add_argument("--save-full", action="store_true")
     parser.add_argument("--acf-lag", type=int, default=40)
-    parser.add_argument("--acf-thin", type=int, default=50, help="Thinning factor for ACF computation only (default 50).")
+    parser.add_argument("--acf-thin", type=int, default=100, help="Thinning factor for ACF computation only (default 50).")
     parser.add_argument("--acf-only-nu", action="store_true", help="Plot only nu's ACF using optional thinning.")
     args = parser.parse_args()
     adapt_flag = args.adapt and not args.no_adapt
