@@ -1,0 +1,15 @@
+{
+  "n_iter": 500,
+  "burn_in": 100,
+  "mu_mean": 0.0004451885890741725,
+  "sigma2_mean": 0.0009226886556980031,
+  "sigma_mean": 0.03037579061848437,
+  "nu_mean": 28.730616658821337,
+  "accept_rate": 0.15,
+  "final_prop_sd": 0.3,
+  "enforce_nu_gt_2": true,
+  "adapt": true,
+  "target_accept": 0.3,
+  "runtime_seconds": 0.05389571189880371,
+  "csv_path": "/Users/apple/Tlhey_folders/Year_4/Stats211/proj/STATS211_Project/data/SP500.csv"
+}
